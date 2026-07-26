@@ -1,0 +1,88 @@
+# Continue.dev configuration for the model you trained.
+#
+# INSTALL
+#   1. Install the "Continue" extension in VS Code.
+#   2. Copy this file to  %USERPROFILE%\.continue\config.yaml
+#        Copy-Item continue\config.yaml $HOME\.continue\config.yaml
+#   3. Start the server:  .\scripts\serve.ps1
+#   4. Open the Continue sidebar and pick "tinyllm (local)" in the model dropdown.
+#
+# HOW THIS WORKS
+#   llama-server implements the OpenAI API, so Continue talks to it with
+#   provider: openai and a custom apiBase. Nothing here is specific to llama.cpp
+#   -- the same three lines would point at OpenAI, or at any other OpenAI-
+#   compatible server. That interchangeability is the whole point of the
+#   standard, and it is why the last stage of this project is three lines of YAML
+#   rather than an integration.
+
+name: tinyllm-local
+version: 0.0.1
+schema: v1
+
+models:
+  - name: tinyllm (local)
+    provider: openai
+    model: tinyllm            # must match --alias in scripts\serve.ps1
+    apiBase: http://127.0.0.1:8080/v1
+    apiKey: none              # llama-server ignores it; the SDK requires one
+
+    # ---------------------------------------------------------------------
+    # chat ONLY, and this is deliberate.
+    #
+    # This model has 15.7M parameters, an 8192-token vocabulary, and was
+    # trained exclusively on synthetic children's stories. It cannot write
+    # code. Giving it `autocomplete`, `edit` or `apply` would insert
+    # confident nonsense into your files and make the whole setup feel
+    # broken -- when in fact it is behaving exactly as a model this size
+    # should.
+    #
+    # The value of this stage is watching the full path work:
+    #   VS Code -> Continue -> HTTP -> llama-server -> your GGUF -> your weights
+    #
+    # Ask it for a story in the sidebar. That it answers at all is the thing
+    # worth seeing.
+    # ---------------------------------------------------------------------
+    roles:
+      - chat
+
+    defaultCompletionOptions:
+      # Must not exceed ModelConfig.max_position_embeddings (512). Continue
+      # sends the file context by default, which would blow past this
+      # instantly -- hence the small maxTokens and the note below.
+      contextLength: 512
+      maxTokens: 256
+      temperature: 0.8
+      topP: 0.95
+
+# Continue normally attaches file/repo context to every request. With a
+# 512-token window there is no room for it, so context providers are kept
+# minimal. This is a real constraint of a tiny model, not a misconfiguration.
+context: []
+
+# ---------------------------------------------------------------------------
+# WHEN YOU WANT AN ASSISTANT THAT CAN ACTUALLY CODE
+#
+# Keep the entry above to demo your own model, and add a real coder alongside
+# it. The shape of the config is identical -- which is the point: once you have
+# built the pipeline once, swapping the model behind it is a URL and a filename.
+#
+# Download a GGUF (e.g. Qwen2.5-Coder-1.5B-Instruct-Q4_K_M, ~1 GB) into models\,
+# serve it on another port, and uncomment:
+#
+# - name: qwen-coder (local)
+#   provider: openai
+#   model: qwen2.5-coder-1.5b
+#   apiBase: http://127.0.0.1:8081/v1
+#   apiKey: none
+#   roles:
+#     - chat
+#     - edit
+#     - apply
+#     - autocomplete
+#   defaultCompletionOptions:
+#     contextLength: 8192
+#     maxTokens: 2048
+#
+# Note the disk cost: this laptop has ~1.3 GB free after setup, so check
+# before downloading a 1 GB model.
+# ---------------------------------------------------------------------------

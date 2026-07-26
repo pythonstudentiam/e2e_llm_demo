@@ -1,0 +1,41 @@
+# Model weights and binaries -- these live on the Hub, not in git.
+models/
+vendor/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+tokenizer.model
+
+# Training artifacts
+checkpoints/
+runs/
+data/
+*.csv.gz
+wandb/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# Secrets -- HF tokens belong in Colab Secrets, never in the repo
+.env
+*.token
+hf_token*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json

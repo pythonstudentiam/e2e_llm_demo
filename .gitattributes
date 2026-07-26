@@ -1,0 +1,16 @@
+# Normalize to LF in the repo. This matters because the repo is authored on
+# Windows and cloned onto Colab's Linux runtime every session.
+* text=auto eol=lf
+
+# PowerShell stays CRLF in the working copy -- it only ever runs on Windows.
+*.ps1 text eol=crlf
+
+# Notebooks are JSON. Marking them as text keeps diffs readable; they are never
+# CRLF-converted, which would change every line.
+*.ipynb text eol=lf
+
+# Binary artifacts, should any slip past .gitignore.
+*.gguf binary
+*.safetensors binary
+*.bin binary
+*.model binary
