@@ -51,9 +51,42 @@ A PyTorch CPU install alone is ~1.2 GB unpacked. So the local tier is deliberate
 
 ---
 
+## Hugging Face access
+
+One token, used in two places. Create it once at
+**[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)** →
+*Create new token* → type **Write** (write is required — stages 4/7/8 push).
+
+| where | how | why |
+|---|---|---|
+| **Colab** | Secrets panel (🔑 in the left sidebar) → name `HF_TOKEN` → enable *Notebook access* | pushes checkpoints, the model, and the GGUF |
+| **This laptop** | `.\.venv\Scripts\hf.exe auth login` — paste the token once | pulls the GGUF back down |
+
+`hf auth login` writes the token to `%USERPROFILE%\.cache\huggingface\token`, and
+every `huggingface_hub` call finds it automatically. No environment variable, and
+nothing to set per-terminal.
+
+Check it worked:
+
+```powershell
+.\.venv\Scripts\hf.exe auth whoami
+```
+
+> **The laptop step is optional if your model repo is public.** `push_to_hub()`
+> creates it public by default, and public repos download without auth. Only the
+> *checkpoint* repo is private, and that is only ever read from Colab. Logging in
+> locally anyway costs 30 seconds and means nothing breaks if you later make the
+> model private.
+
+**Never paste a token into a notebook cell or commit one.** `.gitignore` covers
+`.env` and `*.token`, but the Colab Secrets panel is the actual answer — it keeps
+the value out of the notebook JSON entirely.
+
+---
+
 ## Quickstart
 
-**Prerequisites:** a GitHub repo (Colab clones from it), a [Hugging Face token](https://huggingface.co/settings/tokens) with write access, and a Google account.
+**Prerequisites:** a GitHub repo (Colab clones from it), a Hugging Face token (above), and a Google account.
 
 ```powershell
 # 1. Local setup: venv (no torch) + llama.cpp binaries. ~5 min, ~450 MB.

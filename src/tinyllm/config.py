@@ -31,7 +31,7 @@ class HubConfig:
     pulls. Set ``user`` once (or export HF_USER) and everything else derives.
     """
 
-    user: str = "CHANGEME"  # your HF username -- set this before stage 7
+    user: str = "pythonstudentiam"  # your HF username
     model_repo_suffix: str = PROJECT_NAME
     ckpt_repo_suffix: str = f"{PROJECT_NAME}-checkpoints"
 
