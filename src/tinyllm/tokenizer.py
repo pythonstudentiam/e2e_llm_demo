@@ -75,8 +75,17 @@ def write_corpus_sample(
     return n
 
 
-def train_sentencepiece(corpus_file: Path, out_dir: Path) -> Path:
-    """Fit an 8192-piece BPE vocabulary. Returns the path to tokenizer.model.
+def train_sentencepiece(
+    corpus_file: Path,
+    out_dir: Path,
+    vocab_size: int = tok_cfg.vocab_size,
+    prefix_name: str = "tokenizer",
+) -> Path:
+    """Fit a BPE vocabulary. Returns the path to tokenizer.model.
+
+    ``vocab_size`` is a parameter rather than read straight from the config so
+    the vocab-size ablation in notebook 02 -- and the unit test in
+    tests/test_tokenizer.py -- can train small models cheaply.
 
     The non-default options all exist to make the tokenizer behave like Llama's
     and to make round-tripping exact:
@@ -91,12 +100,12 @@ def train_sentencepiece(corpus_file: Path, out_dir: Path) -> Path:
       user_defined_symbols       ChatML control tokens, kept atomic
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = out_dir / "tokenizer"
+    prefix = out_dir / prefix_name
 
     spm.SentencePieceTrainer.train(
         input=str(corpus_file),
         model_prefix=str(prefix),
-        vocab_size=tok_cfg.vocab_size,
+        vocab_size=vocab_size,
         model_type=tok_cfg.model_type,
         character_coverage=tok_cfg.character_coverage,
         max_sentence_length=tok_cfg.max_sentence_length,
@@ -257,11 +266,31 @@ def assert_special_tokens(sp: spm.SentencePieceProcessor) -> None:
         pid = sp.PieceToId(piece)
         if pid == sp.unk_id():
             raise ValueError(f"{piece!r} is not in the vocabulary")
+
+        # SentencePiece prepends a dummy whitespace prefix (add_dummy_prefix,
+        # on by default), so encoding a bare control token yields [_, <piece>]
+        # -- two ids -- even when the piece is perfectly atomic. Asserting
+        # `ids == [pid]` therefore tests the dummy prefix, not atomicity.
+        # Drop whitespace-only pieces before checking.
         ids = sp.EncodeAsIds(piece)
-        if ids != [pid]:
+        core = [i for i in ids if sp.IdToPiece(i).replace("▁", "").strip() != ""]
+        if core != [pid]:
             raise ValueError(
-                f"{piece!r} tokenizes to {ids} instead of the single id [{pid}]. "
-                "It was not registered as a user_defined_symbol."
+                f"{piece!r} tokenizes to {[sp.IdToPiece(i) for i in ids]} "
+                f"(non-whitespace part {[sp.IdToPiece(i) for i in core]}) instead of "
+                f"the single piece {piece!r}. It was not registered as a "
+                "user_defined_symbol."
+            )
+
+        # The property that actually matters: the token stays a single id when
+        # it appears mid-text, which is how the chat template uses it. A piece
+        # can survive the bare-encode check and still be split in context.
+        context = f"hello{piece}world"
+        ctx_ids = sp.EncodeAsIds(context)
+        if ctx_ids.count(pid) != 1:
+            raise ValueError(
+                f"{piece!r} does not survive as a single id inside text: "
+                f"{context!r} -> {[sp.IdToPiece(i) for i in ctx_ids]}"
             )
 
     for name, expected in (
