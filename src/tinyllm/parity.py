@@ -134,30 +134,80 @@ def check_loss(hf, scratch, cfg: ModelConfig = model_cfg, batch: int = 2, seq: i
     return {"hf": hf_loss, "scratch": sc_loss, "delta": delta, "ln_vocab": expected}
 
 
-def check_kv_cache(scratch, cfg: ModelConfig = model_cfg, prompt_len: int = 8, new_tokens: int = 16) -> dict:
-    """Cached and uncached greedy generation must produce identical tokens.
+def check_kv_cache(scratch, cfg: ModelConfig = model_cfg, prompt_len: int = 8, seq_len: int = 24) -> dict:
+    """Incremental cached decoding must reproduce a single full-sequence forward.
 
     This is the check that matters most. A KV cache bug -- stale positions,
-    rotating cached keys twice, an off-by-one in the offset -- leaves training
-    completely unaffected and only corrupts inference, so it survives every
-    other test in this file.
+    rotating cached keys twice, an off-by-one in the offset, or simply never
+    writing the cache -- leaves training completely unaffected and only corrupts
+    inference, so it survives every other test in this file.
+
+    Logits are compared rather than sampled tokens. Comparing greedy token ids
+    looks stricter but is actually brittle: an untrained model's logits are
+    nearly tied, so a 1e-7 difference can flip an argmax and the two sequences
+    then diverge forever for reasons that have nothing to do with correctness.
+    Comparing logits tests the real invariant and gives a magnitude, not a
+    yes/no.
     """
     torch.manual_seed(7)
-    prompt = torch.randint(0, cfg.vocab_size, (1, prompt_len))
+    seq = torch.randint(0, cfg.vocab_size, (1, seq_len))
 
+    # Reference: the whole sequence in one forward, no cache.
     with torch.no_grad():
-        cached = scratch.generate(prompt, max_new_tokens=new_tokens, temperature=0.0, use_cache=True)
-        uncached = scratch.generate(prompt, max_new_tokens=new_tokens, temperature=0.0, use_cache=False)
+        full_logits, _, _ = scratch(seq)
 
-    if not torch.equal(cached, uncached):
-        first = (cached != uncached).nonzero()[0].tolist()
+    # Incremental: prefill the prompt, then feed one token at a time.
+    caches = [None] * cfg.num_hidden_layers
+    with torch.no_grad():
+        lg, _, caches = scratch(seq[:, :prompt_len], kv_caches=caches, offset=0)
+
+    # The most direct possible check, and the one that catches a cache that is
+    # silently never written.
+    if caches is None or caches[0] is None:
         raise AssertionError(
-            f"cached and uncached generation diverge at position {first}.\n"
-            f"  cached:   {cached.tolist()[0]}\n"
-            f"  uncached: {uncached.tolist()[0]}\n"
-            "Likely a RoPE position offset bug in the cached path."
+            "The KV cache was not populated by the prefill pass. Every "
+            "subsequent token would attend only to itself."
         )
-    return {"tokens": cached.shape[1], "identical": True}
+    past_len = caches[0][0].shape[2]
+    if past_len != prompt_len:
+        raise AssertionError(f"cache holds {past_len} positions after prefilling {prompt_len}")
+
+    incremental = [lg[:, -1]]
+    for t in range(prompt_len, seq_len):
+        with torch.no_grad():
+            lg, _, caches = scratch(seq[:, t : t + 1], kv_caches=caches, offset=t)
+        incremental.append(lg[:, -1])
+
+        expected = t + 1
+        got = caches[0][0].shape[2]
+        if got != expected:
+            raise AssertionError(f"after step {t} the cache holds {got} positions, expected {expected}")
+
+    # incremental[j] is the prediction following position prompt_len-1+j.
+    max_diff = 0.0
+    for j, inc in enumerate(incremental):
+        ref = full_logits[:, prompt_len - 1 + j, :]
+        max_diff = max(max_diff, (ref - inc).abs().max().item())
+
+    if max_diff > LOGIT_TOL:
+        raise AssertionError(
+            f"cached decoding diverges from a full forward: max|delta| = {max_diff:.3e}.\n"
+            "Likely a RoPE position offset bug, or cached keys being re-rotated."
+        )
+
+    # Informational: with matching logits, greedy tokens should agree too --
+    # but near-ties in an untrained model can still flip one, so this is
+    # reported rather than asserted.
+    with torch.no_grad():
+        cached_gen = scratch.generate(seq[:, :prompt_len], max_new_tokens=8, temperature=0.0, use_cache=True)
+        uncached_gen = scratch.generate(seq[:, :prompt_len], max_new_tokens=8, temperature=0.0, use_cache=False)
+
+    return {
+        "positions_checked": len(incremental),
+        "max_abs_diff": max_diff,
+        "final_cache_len": caches[0][0].shape[2],
+        "greedy_identical": torch.equal(cached_gen, uncached_gen),
+    }
 
 
 def run_all(cfg: ModelConfig = model_cfg, verbose: bool = True) -> dict:
@@ -193,8 +243,10 @@ def _fmt(res: dict) -> str:
         return f"HF={res['hf']:.4f} scratch={res['scratch']:.4f} (ln V={res['ln_vocab']:.4f})"
     if "predicted" in res:
         return f"{res['scratch']:,} params, matches config.py"
-    if "tokens" in res:
-        return f"{res['tokens']} tokens identical"
+    if "positions_checked" in res:
+        greedy = "greedy identical" if res["greedy_identical"] else "greedy differs (near-tie)"
+        return (f"{res['positions_checked']} positions, max|delta|={res['max_abs_diff']:.2e}, "
+                f"cache={res['final_cache_len']}, {greedy}")
     return ""
 
 

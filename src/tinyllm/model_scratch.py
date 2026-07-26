@@ -146,7 +146,7 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(cfg.hidden_size, self.num_kv_heads * self.head_dim, bias=cfg.attention_bias)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, cfg.hidden_size, bias=cfg.attention_bias)
 
-    def forward(self, x, cos, sin, attn_mask=None, kv_cache=None):
+    def forward(self, x, cos, sin, attn_mask=None, kv_cache=None, use_cache=False):
         b, s, _ = x.shape
 
         q = self.q_proj(x).view(b, s, self.num_heads, self.head_dim).transpose(1, 2)
@@ -157,14 +157,20 @@ class Attention(nn.Module):
 
         # Append to the cache *after* rotating: cached keys already carry their
         # own positions, so re-rotating them would corrupt the encoding.
+        #
+        # `use_cache` is a separate flag from `kv_cache` on purpose. Conflating
+        # them is a real bug this code once had: generate() seeds the cache list
+        # with None entries, so "kv_cache is None" is true on the *first* step of
+        # a cached run as well as on an uncached run. Keying the write off that
+        # meant the cache was never populated, and every step after the first
+        # attended only to its own token.
         if kv_cache is not None:
             past_k, past_v = kv_cache
             if past_k is not None:
                 k = torch.cat([past_k, k], dim=2)
                 v = torch.cat([past_v, v], dim=2)
-            new_cache = (k, v)
-        else:
-            new_cache = None
+
+        new_cache = (k, v) if use_cache else None
 
         k = repeat_kv(k, self.n_rep)
         v = repeat_kv(v, self.n_rep)
@@ -219,8 +225,10 @@ class DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
 
-    def forward(self, x, cos, sin, attn_mask=None, kv_cache=None):
-        h, new_cache = self.self_attn(self.input_layernorm(x), cos, sin, attn_mask, kv_cache)
+    def forward(self, x, cos, sin, attn_mask=None, kv_cache=None, use_cache=False):
+        h, new_cache = self.self_attn(
+            self.input_layernorm(x), cos, sin, attn_mask, kv_cache, use_cache
+        )
         x = x + h
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x, new_cache
@@ -242,6 +250,10 @@ class TinyLlamaModel(nn.Module):
         self.rotary = RotaryEmbedding(cfg.head_dim, cfg.max_position_embeddings, cfg.rope_theta)
 
     def forward(self, input_ids, kv_caches=None, offset: int = 0):
+        # Passing a list of caches -- even a list of Nones -- is the request to
+        # cache. See the note in Attention.forward.
+        use_cache = kv_caches is not None
+
         b, s = input_ids.shape
         x = self.embed_tokens(input_ids)
         cos, sin = self.rotary(s, offset=offset, dtype=x.dtype)
@@ -258,7 +270,7 @@ class TinyLlamaModel(nn.Module):
         new_caches = []
         for i, layer in enumerate(self.layers):
             cache = kv_caches[i] if kv_caches is not None else None
-            x, nc = layer(x, cos, sin, attn_mask, cache)
+            x, nc = layer(x, cos, sin, attn_mask, cache, use_cache)
             new_caches.append(nc)
 
         return self.norm(x), new_caches
