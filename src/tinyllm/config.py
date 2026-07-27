@@ -257,7 +257,14 @@ class TrainConfig:
     # Batch: micro_batch x grad_accum x seq_len = tokens per optimizer step
     micro_batch_size: int = 32
     grad_accum_steps: int = 4
-    max_steps: int = 5_000
+
+    # 2,500 steps = ~164M tokens = ~10 tokens/parameter, about half of the
+    # Chinchilla-optimal ~20. A deliberate trade: free-tier Colab GPU hours are
+    # the binding constraint, and this halves them. The model comes out
+    # measurably weaker but still fluent on TinyStories, and every downstream
+    # stage is unaffected. Raise back to 5_000 when GPU time allows -- resuming
+    # from a checkpoint written at the lower budget works fine.
+    max_steps: int = 2_500
 
     learning_rate: float = 6e-4
     min_lr_ratio: float = 0.1  # cosine floor = lr * ratio
