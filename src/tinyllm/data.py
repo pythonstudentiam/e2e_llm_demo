@@ -181,8 +181,10 @@ def causal_loss(logits, targets):
     """
     import torch.nn.functional as F
 
+    # reshape, not view: callers pass slices such as logits[:, :-1, :], which
+    # are non-contiguous, and view() rejects those.
     return F.cross_entropy(
-        logits.float().view(-1, logits.size(-1)),
+        logits.float().reshape(-1, logits.size(-1)),
         targets.reshape(-1),
     )
 
