@@ -160,34 +160,69 @@ def load_tokens(path: Path, in_memory: bool = True) -> np.ndarray:
     return np.memmap(path, dtype=TOKEN_DTYPE, mode="r")
 
 
-def ensure_token_file(name: str, data_dir: Path, repo_id: str) -> Path:
-    """Return the path to a packed token file, fetching it from the Hub if the
-    runtime doesn't have it.
+def ensure_token_file(name: str, data_dir: Path, repo_id: str, sp=None,
+                      upload: bool = True) -> Path:
+    """Return the path to a packed token file, obtaining it however it can.
+
+    Three tiers, cheapest first:
+
+      1. already on this runtime          (free)
+      2. downloaded from the Hub          (~seconds for val, ~1 min for train)
+      3. rebuilt from the source dataset  (~1 min for val, ~15 min for train)
 
     Colab recycles runtimes, so ``/content/work`` is empty at the start of every
-    session after the first. Notebooks 05-07 need ``val.bin`` and would
-    otherwise silently bind it to None and fail several cells later with a
-    confusing TypeError.
+    session after the first, and tier 2 only works if a previous session
+    uploaded the file. Tier 3 means a missing upload costs a minute rather than
+    blocking the notebook -- and the rebuilt file is pushed to the Hub so the
+    next runtime lands back on tier 2.
+
+    ``sp`` is the SentencePiece processor; without it tier 3 is unavailable.
     """
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import HfApi, hf_hub_download
 
     data_dir = Path(data_dir)
     local = data_dir / name
     if local.exists():
         return local
 
+    data_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         src = hf_hub_download(repo_id=repo_id, filename=f"data/{name}")
+        local.write_bytes(Path(src).read_bytes())
+        print(f"  pulled {name} from {repo_id}")
+        return local
     except Exception as e:
-        raise FileNotFoundError(
-            f"{name} is not on this runtime and could not be fetched from "
-            f"{repo_id}: {type(e).__name__}: {e}\n"
-            "Run section 2.7 of notebook 02 to upload the packed token files, "
-            "or re-run notebook 02 to rebuild them."
-        ) from e
+        if sp is None:
+            raise FileNotFoundError(
+                f"{name} is not on this runtime and could not be fetched from "
+                f"{repo_id}: {type(e).__name__}: {e}\n"
+                "Pass sp= to rebuild it, or run section 2.7 of notebook 02 to "
+                "upload the packed token files."
+            ) from e
+        print(f"  {name} not on the Hub ({type(e).__name__}); rebuilding it")
 
-    data_dir.mkdir(parents=True, exist_ok=True)
-    local.write_bytes(Path(src).read_bytes())
+    is_val = name.startswith("val")
+    stats = pack_tokens(
+        sp,
+        stream_texts(split=data_cfg.val_split if is_val else data_cfg.train_split),
+        local,
+        max_tokens=data_cfg.val_tokens if is_val else None,
+    )
+    print(f"  rebuilt {name}: {stats['n_tokens']:,} tokens ({stats['size_mb']:.1f} MB)")
+
+    if upload:
+        try:
+            api = HfApi()
+            api.create_repo(repo_id, repo_type="model", exist_ok=True, private=True)
+            for f in (local, local.with_suffix(".json")):
+                if f.exists():
+                    api.upload_file(path_or_fileobj=str(f), path_in_repo=f"data/{f.name}",
+                                    repo_id=repo_id, repo_type="model")
+            print(f"  uploaded to {repo_id} -- future runtimes will download it")
+        except Exception as e:
+            print(f"  (Hub upload skipped: {type(e).__name__}: {e})")
+
     return local
 
 
