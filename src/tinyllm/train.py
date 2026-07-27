@@ -36,6 +36,20 @@ from tinyllm.data import causal_loss, get_batch, iter_eval_batches
 # T4 fp16 tensor-core peak. Used only for the MFU readout.
 T4_PEAK_FLOPS = 65e12
 
+CHECKPOINT_VERSION = 2
+"""Bump when a change makes older checkpoints *invalid*, not merely old.
+
+v1 -> v2: pretraining passed ``labels=y`` to the model, but ``get_batch``
+already returns ``y`` shifted one position and HuggingFace shifts labels
+internally. Every v1 checkpoint therefore holds weights trained to predict two
+tokens ahead. Resuming from one would silently continue training a broken model
+with a healthy-looking loss curve, so they are rejected rather than loaded.
+"""
+
+
+class IncompatibleCheckpoint(RuntimeError):
+    """Raised when a checkpoint predates a change that invalidates it."""
+
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -93,6 +107,7 @@ def save_checkpoint(path: Path, model, optimizer, scaler, step: int, rng: np.ran
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
+            "version": CHECKPOINT_VERSION,
             "step": step,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -111,6 +126,13 @@ def save_checkpoint(path: Path, model, optimizer, scaler, step: int, rng: np.ran
 def load_checkpoint(path: Path, model, optimizer=None, scaler=None, rng: np.random.Generator | None = None):
     """Restore a run. Returns the step to resume from."""
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
+
+    version = ckpt.get("version", 1)
+    if version != CHECKPOINT_VERSION:
+        raise IncompatibleCheckpoint(
+            f"checkpoint is version {version}, this code writes version {CHECKPOINT_VERSION}"
+        )
+
     model.load_state_dict(ckpt["model"])
     if optimizer is not None and ckpt.get("optimizer"):
         optimizer.load_state_dict(ckpt["optimizer"])
@@ -274,9 +296,22 @@ def train(
         local = out_dir / "latest.pt"
         ckpt_path = local if local.exists() else pull_checkpoint(local_dir=out_dir)
         if ckpt_path and Path(ckpt_path).exists():
-            start_step, prev = load_checkpoint(Path(ckpt_path), model, optimizer, scaler, rng)
-            history = prev.get("history", [])
-            print(f"  resumed from step {start_step:,}")
+            try:
+                start_step, prev = load_checkpoint(Path(ckpt_path), model, optimizer, scaler, rng)
+                history = prev.get("history", [])
+                print(f"  resumed from step {start_step:,}")
+            except IncompatibleCheckpoint as e:
+                # Starting over is the safe failure here. Continuing from a
+                # checkpoint written by superseded code would keep training a
+                # model that is wrong in a way the loss curve does not show.
+                print(f"  IGNORING existing checkpoint: {e}")
+                print("  It predates a fix that changes what the model learns, so")
+                print("  resuming would silently continue a broken run. Starting fresh.")
+                Path(ckpt_path).unlink(missing_ok=True)
+                model = build_model(mcfg, device)
+                optimizer, pg = make_optimizer(model, cfg)
+                scaler = torch.amp.GradScaler("cuda", enabled=device.startswith("cuda"))
+                start_step, history = 0, []
 
     model.train()
 
