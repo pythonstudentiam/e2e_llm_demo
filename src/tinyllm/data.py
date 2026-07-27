@@ -160,6 +160,37 @@ def load_tokens(path: Path, in_memory: bool = True) -> np.ndarray:
     return np.memmap(path, dtype=TOKEN_DTYPE, mode="r")
 
 
+def ensure_token_file(name: str, data_dir: Path, repo_id: str) -> Path:
+    """Return the path to a packed token file, fetching it from the Hub if the
+    runtime doesn't have it.
+
+    Colab recycles runtimes, so ``/content/work`` is empty at the start of every
+    session after the first. Notebooks 05-07 need ``val.bin`` and would
+    otherwise silently bind it to None and fail several cells later with a
+    confusing TypeError.
+    """
+    from huggingface_hub import hf_hub_download
+
+    data_dir = Path(data_dir)
+    local = data_dir / name
+    if local.exists():
+        return local
+
+    try:
+        src = hf_hub_download(repo_id=repo_id, filename=f"data/{name}")
+    except Exception as e:
+        raise FileNotFoundError(
+            f"{name} is not on this runtime and could not be fetched from "
+            f"{repo_id}: {type(e).__name__}: {e}\n"
+            "Run section 2.7 of notebook 02 to upload the packed token files, "
+            "or re-run notebook 02 to rebuild them."
+        ) from e
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(Path(src).read_bytes())
+    return local
+
+
 def causal_loss(logits, targets):
     """Next-token cross-entropy against the pre-shifted targets from get_batch.
 
