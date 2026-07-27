@@ -328,6 +328,13 @@ def train(
     print(f"  budget: {total_steps:,} steps x {cfg.tokens_per_step:,} tok = "
           f"{total_steps * cfg.tokens_per_step / 1e6:.0f}M tokens")
 
+    # Starting from scratch means any existing metrics belong to a different
+    # run. Appending to them makes the loss curve plot rows from both, joined
+    # by a meaningless line, and makes "first val loss" and median MFU report
+    # the wrong run entirely.
+    if start_step == 0 and log_path.exists():
+        log_path.unlink()
+
     new_file = not log_path.exists()
     logf = log_path.open("a", newline="", encoding="utf-8")
     writer = csv.writer(logf)
