@@ -143,12 +143,48 @@ def pack_tokens(
     return stats
 
 
-def load_tokens(path: Path) -> np.ndarray:
-    """Memory-map a packed token file. Never loads it into RAM."""
+def load_tokens(path: Path, in_memory: bool = True) -> np.ndarray:
+    """Load a packed token file.
+
+    ``in_memory=True`` reads the whole array into RAM. The training corpus is
+    ~660 MB as uint16 and Colab has ~12 GB, so this is affordable -- and it
+    matters: the loader draws 128 random 512-token windows per optimizer step,
+    and serving those from a memory-mapped file on Colab's disk is slow enough
+    to dominate step time. Set False if the corpus outgrows RAM.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"{path} not found -- run pack_tokens() first (notebook 01).")
+    if in_memory:
+        return np.fromfile(path, dtype=TOKEN_DTYPE)
     return np.memmap(path, dtype=TOKEN_DTYPE, mode="r")
+
+
+def causal_loss(logits, targets):
+    """Next-token cross-entropy against the pre-shifted targets from get_batch.
+
+    Use this rather than passing ``labels=`` to a HuggingFace model.
+
+    ``LlamaForCausalLM`` shifts labels internally::
+
+        shift_logits = logits[..., :-1, :]
+        shift_labels = labels[..., 1:]
+
+    and ``get_batch`` already returns ``y`` shifted by one. Passing ``labels=y``
+    therefore shifts twice and trains the model to predict the token *two*
+    positions ahead. That converges to a perfectly healthy-looking loss curve
+    and produces incoherent text, because generation samples the next token from
+    a distribution that was fitted for the one after it.
+
+    Computing the loss here makes the convention explicit and uses all
+    ``seq_len`` predictions instead of discarding the last one.
+    """
+    import torch.nn.functional as F
+
+    return F.cross_entropy(
+        logits.float().view(-1, logits.size(-1)),
+        targets.reshape(-1),
+    )
 
 
 def describe(path: Path) -> dict:

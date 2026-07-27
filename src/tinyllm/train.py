@@ -31,7 +31,7 @@ import torch
 
 from tinyllm import config as cfgmod
 from tinyllm.config import ModelConfig, TrainConfig, data_cfg, hub, model_cfg, train_cfg
-from tinyllm.data import get_batch, iter_eval_batches
+from tinyllm.data import causal_loss, get_batch, iter_eval_batches
 
 # T4 fp16 tensor-core peak. Used only for the MFU readout.
 T4_PEAK_FLOPS = 65e12
@@ -171,10 +171,45 @@ def estimate_loss(model, tokens, batch_size: int, seq_len: int, n_batches: int, 
     losses = []
     for x, y in iter_eval_batches(tokens, batch_size, seq_len, n_batches, device=device):
         with torch.autocast("cuda", dtype=torch.float16, enabled=device.startswith("cuda")):
-            out = model(input_ids=x, labels=y)
-        losses.append(out.loss.item())
+            logits = model(input_ids=x).logits
+        losses.append(causal_loss(logits, y).item())
     model.train()
     return float(np.mean(losses))
+
+
+@torch.no_grad()
+def assert_loss_convention(model, x, y, tol: float = 1e-3) -> dict:
+    """Guard against the double-shift bug, which is otherwise invisible.
+
+    Passing ``labels=y`` to a HuggingFace causal LM double-shifts the targets and
+    trains the model to predict two tokens ahead. It converges to a plausible
+    loss curve and produces incoherent text -- a full training run's worth of
+    wasted compute before anything looks wrong.
+
+    On identical positions, HF's internal shift with ``labels=x`` must agree with
+    our explicit loss against ``y``. The double-shifted value is returned too, so
+    the difference is visible rather than inferred.
+    """
+    model.eval()
+    logits = model(input_ids=x).logits
+    ours = causal_loss(logits[:, :-1, :], y[:, :-1])       # drop last to match HF
+    hf = model(input_ids=x, labels=x).loss                  # HF shifts internally
+    wrong = model(input_ids=x, labels=y).loss               # the bug
+    model.train()
+
+    delta = abs(ours.item() - hf.item())
+    if delta > tol:
+        raise AssertionError(
+            f"Loss convention mismatch: explicit={ours.item():.6f} vs "
+            f"HF labels=x {hf.item():.6f} (delta {delta:.2e}). "
+            "get_batch's shift contract and the loss no longer agree."
+        )
+    return {
+        "next_token_loss": ours.item(),
+        "hf_labels_x": hf.item(),
+        "double_shifted": wrong.item(),
+        "delta": delta,
+    }
 
 
 @torch.no_grad()
@@ -245,6 +280,13 @@ def train(
 
     model.train()
 
+    # Verify the loss convention before spending any GPU time on it.
+    _x, _y = get_batch(train_tokens, 4, data_cfg.seq_len, device=device, rng=np.random.default_rng(0))
+    conv = assert_loss_convention(model, _x, _y)
+    print(f"  loss check: next-token {conv['next_token_loss']:.4f} "
+          f"(double-shifted would be {conv['double_shifted']:.4f})")
+    del _x, _y
+
     n_params = sum(p.numel() for p in model.parameters())
     flops_per_token = mcfg.flops_per_token()
     print(f"  model: {n_params:,} params | {pg['decay_tensors']} decayed / {pg['no_decay_tensors']} not")
@@ -272,10 +314,12 @@ def train(
             for _ in range(cfg.grad_accum_steps):
                 x, y = get_batch(train_tokens, cfg.micro_batch_size, data_cfg.seq_len, device=device, rng=rng)
                 with torch.autocast("cuda", dtype=torch.float16, enabled=device.startswith("cuda")):
-                    out = model(input_ids=x, labels=y)
+                    # NOT model(input_ids=x, labels=y): HF shifts labels
+                    # internally and y is already shifted. See data.causal_loss.
+                    logits = model(input_ids=x).logits
                     # Scale so the accumulated gradient equals the gradient of
                     # the mean loss over the full effective batch.
-                    loss = out.loss / cfg.grad_accum_steps
+                    loss = causal_loss(logits, y) / cfg.grad_accum_steps
                 scaler.scale(loss).backward()
                 accum_loss += loss.item()
 

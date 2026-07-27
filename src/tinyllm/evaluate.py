@@ -32,7 +32,7 @@ import numpy as np
 import torch
 
 from tinyllm.config import data_cfg, gen_cfg, model_cfg
-from tinyllm.data import iter_eval_batches
+from tinyllm.data import causal_loss, iter_eval_batches
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +52,10 @@ def perplexity(model, tokens: np.ndarray, batch_size: int = 32, seq_len: int = d
     losses = []
     for x, y in iter_eval_batches(tokens, batch_size, seq_len, n_batches, device=device):
         with torch.autocast("cuda", dtype=torch.float16, enabled=device.startswith("cuda")):
-            out = model(input_ids=x, labels=y)
-        losses.append(out.loss.float().item())
+            # Explicit loss, not labels=y -- HF shifts internally and y is
+            # already shifted. See data.causal_loss.
+            logits = model(input_ids=x).logits
+        losses.append(causal_loss(logits, y).item())
 
     mean_loss = float(np.mean(losses))
     return {

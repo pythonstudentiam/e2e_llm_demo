@@ -363,6 +363,10 @@ def train_sft(model, sp, dataset: list[dict], cfg: SFTConfig = sft_cfg,
             idx = rng.integers(0, len(dataset), size=cfg.micro_batch_size)
             x, y, attn = collate([dataset[i] for i in idx], pad_id, cfg.ignore_index, device)
             with torch.autocast("cuda", dtype=torch.float16, enabled=device.startswith("cuda")):
+                # labels= is correct HERE, unlike in pretraining: collate()
+                # returns labels aligned with input_ids (same positions, prompt
+                # masked), not pre-shifted, so HF's internal shift is exactly
+                # what we want. Do not "fix" this to match train.py.
                 out = model(input_ids=x, attention_mask=attn, labels=y)
                 loss = out.loss / cfg.grad_accum_steps
             scaler.scale(loss).backward()
