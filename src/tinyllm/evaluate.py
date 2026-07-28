@@ -32,7 +32,7 @@ import numpy as np
 import torch
 
 from tinyllm.config import data_cfg, gen_cfg, model_cfg
-from tinyllm.data import causal_loss, iter_eval_batches
+from tinyllm.data import causal_loss, iter_eval_batches, resolve_device
 
 
 # ---------------------------------------------------------------------------
@@ -41,13 +41,14 @@ from tinyllm.data import causal_loss, iter_eval_batches
 
 @torch.no_grad()
 def perplexity(model, tokens: np.ndarray, batch_size: int = 32, seq_len: int = data_cfg.seq_len,
-               n_batches: int = 100, device: str = "cuda") -> dict:
+               n_batches: int = 100, device: str | None = None) -> dict:
     """Token-level perplexity over deterministic held-out windows.
 
     Losses are averaged in log space (i.e. mean cross-entropy, then exponentiate)
     rather than averaging the per-batch perplexities, which would be a different
     and wrong quantity.
     """
+    device = resolve_device(device)
     model.eval()
     losses = []
     for x, y in iter_eval_batches(tokens, batch_size, seq_len, n_batches, device=device):
@@ -80,8 +81,9 @@ def bits_per_token(loss: float) -> float:
 def generate(model, sp, prompt: str, max_new_tokens: int = gen_cfg.max_new_tokens,
              temperature: float = gen_cfg.temperature, top_p: float = gen_cfg.top_p,
              top_k: int = gen_cfg.top_k, repetition_penalty: float = 1.0,
-             device: str = "cuda", seed: int | None = None) -> str:
+             device: str | None = None, seed: int | None = None) -> str:
     """Continue a prompt. Returns only the newly generated text."""
+    device = resolve_device(device)
     if seed is not None:
         torch.manual_seed(seed)
     model.eval()
@@ -129,7 +131,7 @@ def repetition_stats(text: str, max_n: int = 4) -> dict:
 
 @torch.no_grad()
 def sampling_sweep(model, sp, prompt: str | None = None, temperatures=(0.1, 0.5, 0.8, 1.0, 1.3),
-                   device: str = "cuda", max_new_tokens: int = 120, seed: int = 0) -> list[dict]:
+                   device: str | None = None, max_new_tokens: int = 120, seed: int = 0) -> list[dict]:
     """Generate at several temperatures from one prompt.
 
     The tradeoff is visible directly: low temperature is coherent and repetitive,
@@ -149,7 +151,7 @@ def sampling_sweep(model, sp, prompt: str | None = None, temperatures=(0.1, 0.5,
 
 
 @torch.no_grad()
-def sample_suite(model, sp, prompts=None, device: str = "cuda", seed: int = 0, **kw) -> list[dict]:
+def sample_suite(model, sp, prompts=None, device: str | None = None, seed: int = 0, **kw) -> list[dict]:
     """Generate from the fixed prompt set defined in config.
 
     Fixed prompts on purpose: the point is comparing the same inputs across the
@@ -169,7 +171,7 @@ def sample_suite(model, sp, prompts=None, device: str = "cuda", seed: int = 0, *
 # Reporting
 # ---------------------------------------------------------------------------
 
-def full_report(model, sp, val_tokens, device: str = "cuda", n_batches: int = 100) -> dict:
+def full_report(model, sp, val_tokens, device: str | None = None, n_batches: int = 100) -> dict:
     """Everything stage 5 measures, in one dict. Saved with the model card."""
     ppl = perplexity(model, val_tokens, n_batches=n_batches, device=device)
     report = {

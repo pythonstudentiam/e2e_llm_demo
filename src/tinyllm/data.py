@@ -29,6 +29,20 @@ from tinyllm.tokenizer import encode_stream
 TOKEN_DTYPE = np.uint16
 
 
+def resolve_device(device: str | None = None) -> str:
+    """Pick a device, preferring CUDA but degrading to CPU rather than failing.
+
+    Free-tier Colab GPU quota runs out, and the stages that only do forward
+    passes -- evaluation, export, GGUF conversion -- work perfectly well on CPU.
+    Hard-coding "cuda" turned a slow path into a blocked one.
+    """
+    import torch
+
+    if device is not None:
+        return device
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 # ---------------------------------------------------------------------------
 # Streaming source
 # ---------------------------------------------------------------------------
@@ -272,7 +286,7 @@ def get_batch(
     tokens: np.ndarray,
     batch_size: int,
     seq_len: int,
-    device: str = "cuda",
+    device: str | None = None,
     rng: np.random.Generator | None = None,
 ):
     """Sample a random batch of contiguous windows.
@@ -285,6 +299,7 @@ def get_batch(
     worth a few percent on a T4 where the model is small enough that data
     movement is a visible fraction of step time.
     """
+    device = resolve_device(device)
     import torch
 
     rng = rng or np.random.default_rng()
@@ -314,7 +329,7 @@ def iter_eval_batches(
     batch_size: int,
     seq_len: int,
     n_batches: int,
-    device: str = "cuda",
+    device: str | None = None,
     seed: int = data_cfg.seed,
 ):
     """Deterministic batches for validation.

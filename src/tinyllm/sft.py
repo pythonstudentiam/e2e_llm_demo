@@ -52,6 +52,7 @@ from typing import Iterable, Iterator
 import numpy as np
 
 from tinyllm.config import SFTConfig, gen_cfg, sft_cfg, tok_cfg
+from tinyllm.data import resolve_device
 
 # torch is imported lazily inside collate/train_sft/chat rather than here, so the
 # record parser and instruction builder can be imported -- and tested -- on the
@@ -252,12 +253,13 @@ def build_sft_dataset(sp, limit: int = 60_000, seq_len: int = sft_cfg.seq_len,
     return out
 
 
-def collate(batch: list[dict], pad_id: int, ignore_index: int = sft_cfg.ignore_index, device: str = "cuda"):
+def collate(batch: list[dict], pad_id: int, ignore_index: int = sft_cfg.ignore_index, device: str | None = None):
     """Right-pad to the longest example in the batch.
 
     Padding is masked in ``attention_mask`` *and* in the labels. Masking only one
     leaves the model either attending to garbage or training on it.
     """
+    device = resolve_device(device)
     import torch
 
     maxlen = max(len(b["input_ids"]) for b in batch)
@@ -315,7 +317,7 @@ def describe_masking(sp, example: dict, ignore_index: int = sft_cfg.ignore_index
 # ---------------------------------------------------------------------------
 
 def train_sft(model, sp, dataset: list[dict], cfg: SFTConfig = sft_cfg,
-              out_dir: Path = Path("checkpoints/sft"), device: str = "cuda",
+              out_dir: Path = Path("checkpoints/sft"), device: str | None = None,
               max_steps: int | None = None):
     """Fine-tune the pretrained model on instructions.
 
@@ -323,6 +325,7 @@ def train_sft(model, sp, dataset: list[dict], cfg: SFTConfig = sft_cfg,
     reshape output format, not relearn language; too high an LR here erases the
     pretrained knowledge and the model gets worse at the thing it was good at.
     """
+    device = resolve_device(device)
     import torch
 
     from tinyllm.train import make_optimizer
@@ -390,13 +393,14 @@ def train_sft(model, sp, dataset: list[dict], cfg: SFTConfig = sft_cfg,
 
 
 def chat(model, sp, instruction: str, max_new_tokens: int = gen_cfg.max_new_tokens,
-         temperature: float = gen_cfg.temperature, device: str = "cuda") -> str:
+         temperature: float = gen_cfg.temperature, device: str | None = None) -> str:
     """Single-turn generation through the chat template.
 
     Stops at ``<|im_end|>`` -- the same token llama-server will stop at once the
     template reaches the GGUF, which is why the tokenizer for the chat model
     reports it as EOS.
     """
+    device = resolve_device(device)
     import torch
 
     model.eval()

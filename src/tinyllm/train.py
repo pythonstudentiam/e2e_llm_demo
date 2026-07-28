@@ -31,7 +31,7 @@ import torch
 
 from tinyllm import config as cfgmod
 from tinyllm.config import ModelConfig, TrainConfig, data_cfg, hub, model_cfg, train_cfg
-from tinyllm.data import causal_loss, get_batch, iter_eval_batches
+from tinyllm.data import causal_loss, get_batch, iter_eval_batches, resolve_device
 
 # T4 fp16 tensor-core peak. Used only for the MFU readout.
 T4_PEAK_FLOPS = 65e12
@@ -55,13 +55,14 @@ class IncompatibleCheckpoint(RuntimeError):
 # Setup
 # ---------------------------------------------------------------------------
 
-def build_model(cfg: ModelConfig = model_cfg, device: str = "cuda"):
+def build_model(cfg: ModelConfig = model_cfg, device: str | None = None):
     """Instantiate the model that actually trains.
 
     HuggingFace's implementation, not ours, because its tensor names are what
     convert_hf_to_gguf.py reads in stage 8. parity.py has already established
     the two compute the same function.
     """
+    device = resolve_device(device)
     from transformers import LlamaForCausalLM
 
     hf_cfg = cfg.to_hf_config()
@@ -187,8 +188,9 @@ def pull_checkpoint(repo_id: str = None, filename: str = "latest.pt", local_dir:
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def estimate_loss(model, tokens, batch_size: int, seq_len: int, n_batches: int, device: str = "cuda") -> float:
+def estimate_loss(model, tokens, batch_size: int, seq_len: int, n_batches: int, device: str | None = None) -> float:
     """Mean loss over a fixed, deterministic set of validation windows."""
+    device = resolve_device(device)
     model.eval()
     losses = []
     for x, y in iter_eval_batches(tokens, batch_size, seq_len, n_batches, device=device):
@@ -235,9 +237,10 @@ def assert_loss_convention(model, x, y, tol: float = 1e-3) -> dict:
 
 
 @torch.no_grad()
-def sample(model, sp, prompt: str, max_new_tokens: int = 100, temperature: float = 0.8, device: str = "cuda") -> str:
+def sample(model, sp, prompt: str, max_new_tokens: int = 100, temperature: float = 0.8, device: str | None = None) -> str:
     """Generate a continuation. Watching these evolve is the most informative
     diagnostic in the whole run -- loss curves hide qualitative jumps."""
+    device = resolve_device(device)
     model.eval()
     ids = [sp.bos_id()] + sp.EncodeAsIds(prompt)
     x = torch.tensor([ids], dtype=torch.long, device=device)
@@ -265,7 +268,7 @@ def train(
     cfg: TrainConfig = train_cfg,
     mcfg: ModelConfig = model_cfg,
     out_dir: Path = Path("checkpoints"),
-    device: str = "cuda",
+    device: str | None = None,
     resume: bool = True,
     push_to_hub: bool = True,
     max_steps: int | None = None,
@@ -277,6 +280,7 @@ def train(
     exact code path rather than a simplified copy of it. The smoke run is only
     useful if it exercises the same code.
     """
+    device = resolve_device(device)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_path or (out_dir / "metrics.csv")
@@ -433,7 +437,7 @@ def train(
     return model, history
 
 
-def smoke_test(sp, train_tokens, val_tokens, out_dir: Path = Path("checkpoints/smoke"), device: str = "cuda"):
+def smoke_test(sp, train_tokens, val_tokens, out_dir: Path = Path("checkpoints/smoke"), device: str | None = None):
     """A 50-step rehearsal of the real thing.
 
     Runs the same ``train()`` with a tiny step budget so every code path --
