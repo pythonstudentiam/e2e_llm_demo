@@ -96,6 +96,13 @@ def iter_instruct_records(lines: Iterable[str], limit: int | None = None) -> Ite
                         rec[pref[:-1].lower()] = line[len(pref):].strip()
                         break
             else:
+                # A header line appearing *after* "Story:" means the record is
+                # malformed -- usually the next record started without a
+                # separator. Stop the story here rather than absorbing it.
+                # Left in, the model learns to emit a stray "Summary: ..." line
+                # at the end of its answers.
+                if line.startswith(FIELD_PREFIXES) or line.startswith(STORY_HEADER):
+                    break
                 story_lines.append(line)
         story = "\n".join(story_lines).strip()
         if not story:
